@@ -1,0 +1,241 @@
+# healthd configuration.
+#
+# This file is also compiled into the binary as the default config
+# (`healthd --print-default-config` prints it). To customise, copy it to
+#   ~/.config/healthd/config.toml
+#
+# NOTE: if your file contains ANY [[rule]] table, your rules REPLACE the
+# built-in set entirely (no merging), so keep the ones you still want.
+#
+# Observation cadence per source (what `sustain` counts, see poll/*.rs):
+#   cpu, ram          every   5 s
+#   battery           every  60 s
+#   nvme temperature  every  60 s
+#   nvme SMART        every  10 min
+
+[retention]
+# 30 days: long enough to answer "when did the battery/SSD start misbehaving?"
+# while the downsampled data stays a few MB of SQLite.
+days = 30
+# Samples younger than this keep their 1-minute resolution; older ones are
+# averaged into 1-hour buckets. 48 h covers "what happened yesterday" in
+# detail; beyond that only the trend matters and hourly rows are ~60x smaller.
+raw_hours = 48
+
+[battery]
+# Directory name under /sys/class/power_supply/. BAT0 is what most ThinkPad,
+# Dell and ASUS laptops expose; change it if `ls /sys/class/power_supply` differs.
+name = "BAT0"
+
+[nvme]
+# NVMe wear/error counters need root, so healthd runs
+#   doas -n <command> smart-log /dev/nvmeN -o json
+# every 10 minutes (`-n` = never prompt; it fails if no rule allows it).
+# doas matches the command exactly as typed, so this must equal the `cmd` in
+# your doas.conf rule: keep "nvme" for `cmd nvme`, or use an absolute path such
+# as "/usr/bin/nvme" together with `cmd /usr/bin/nvme`. See the README.
+command = "nvme"
+
+[notify]
+# Desktop notifications over D-Bus. Alerts are always written to the events
+# table, even when this is false (useful for headless boxes).
+desktop = true
+
+# ---------------------------------------------------------------------------
+# Rules. Fields:
+#   name         unique label shown in events
+#   source       "cpu" | "ram" | "battery" | "nvme*"  (trailing * = prefix match,
+#                so "nvme*" covers nvme0, nvme1, ... and each drive is tracked
+#                separately)
+#   metric       metric name emitted by that poller
+#   op           ">", ">=", "<" or "<="
+#   threshold    number to compare against
+#   severity     "info" | "warn" | "crit"          (default "warn")
+#   sustain      consecutive observations that must violate before alerting,
+#                so a one-sample spike does not notify    (default 1)
+#   cooldown_min minimum minutes between repeat alerts while the condition
+#                persists                                  (default 30)
+#   message      text; may use {source} {metric} {value} {threshold}
+# ---------------------------------------------------------------------------
+
+[[rule]]
+name = "cpu-hot"
+source = "cpu"
+metric = "temp_c"
+op = ">"
+# 85 C: well above normal load temps (60-80 C) but ~10 C below the usual
+# 95-100 C throttle point, so there is still time to act.
+threshold = 85.0
+# 3 x 5 s = 15 s: turbo bursts touch 85 C for a second or two; 15 s sustained
+# means the cooler genuinely cannot keep up.
+sustain = 3
+cooldown_min = 30
+message = "CPU is at {value} C (limit {threshold} C). Check airflow, dust and fan."
+
+[[rule]]
+# extra: sustained 100% load is how runaway processes and crypto-miners show up.
+name = "cpu-pegged"
+source = "cpu"
+metric = "load_pct"
+op = ">"
+threshold = 95.0
+# 60 x 5 s = 5 min: compiles and encodes peg the CPU for a minute or two; five
+# minutes straight is unusual enough to be worth a look.
+sustain = 60
+cooldown_min = 60
+message = "CPU has been above {threshold}% for 5 minutes (now {value}%)."
+
+[[rule]]
+# extra: Intel thermal-throttle counters; any increase means the CPU slowed down.
+name = "cpu-throttled"
+source = "cpu"
+metric = "throttle_events"
+op = ">"
+threshold = 0.0
+cooldown_min = 60
+message = "CPU was thermally throttled ({value} events in the last 5 s)."
+
+[[rule]]
+name = "nvme-spare-low"
+source = "nvme*"
+metric = "avail_spare"
+op = "<"
+# 20 %: the drive's own critical threshold (spare_thresh) is typically 10 %;
+# alerting at 20 % leaves margin to back up and replace.
+threshold = 20.0
+severity = "crit"
+# 24 h: a worn drive does not recover, so remind daily rather than every 10 min.
+cooldown_min = 1440
+message = "{source}: available spare is {value}% (limit {threshold}%). Back up and plan to replace the drive."
+
+[[rule]]
+name = "nvme-media-errors"
+source = "nvme*"
+metric = "media_errors"
+op = ">"
+# Any media/data-integrity error is unrecoverable flash damage; there is no
+# "acceptable" count, so the limit is zero.
+threshold = 0.0
+severity = "crit"
+cooldown_min = 1440
+message = "{source}: {value} media/data-integrity errors reported by the drive."
+
+[[rule]]
+name = "nvme-hot"
+source = "nvme*"
+metric = "temp_c"
+op = ">"
+# 75 C: most consumer NVMe drives start throttling between 70 and 85 C, so 75
+# means the controller is close to cutting speed.
+threshold = 75.0
+# 2 x 60 s: ignore a single hot minute during a big copy.
+sustain = 2
+cooldown_min = 30
+message = "{source} is at {value} C (limit {threshold} C). Check heatsink and airflow."
+
+[[rule]]
+# extra: the drive's summary flag (spare low, reliability degraded, read-only...).
+name = "nvme-critical-warning"
+source = "nvme*"
+metric = "critical_warning"
+op = ">"
+threshold = 0.0
+severity = "crit"
+cooldown_min = 1440
+message = "{source}: critical warning flags set (bitmask {value}). Run `nvme smart-log` for details."
+
+[[rule]]
+# extra: percentage_used is the vendor's endurance estimate; 100 = rated life used.
+name = "nvme-worn"
+source = "nvme*"
+metric = "percentage_used"
+op = ">="
+# 90 %: ten percent of rated endurance left is the moment to buy a replacement.
+threshold = 90.0
+cooldown_min = 10080
+message = "{source}: {value}% of rated endurance used."
+
+[[rule]]
+name = "battery-worn"
+source = "battery"
+metric = "health_pct"
+op = "<"
+# 80 %: the common "end of useful life" line (capacity vs original design).
+threshold = 80.0
+# Weekly: capacity loss is slow and permanent; one reminder a week is enough.
+cooldown_min = 10080
+message = "Battery holds {value}% of its design capacity (limit {threshold}%)."
+
+[[rule]]
+# extra: heat is the biggest Li-ion ageing factor.
+name = "battery-hot"
+source = "battery"
+metric = "temp_c"
+op = ">"
+# 45 C: above this, cell ageing accelerates noticeably.
+threshold = 45.0
+sustain = 3
+cooldown_min = 60
+message = "Battery is at {value} C (limit {threshold} C). Heat shortens its life."
+
+[[rule]]
+# extra: sitting at 100% on AC for days is the classic way to wear a laptop battery.
+name = "battery-held-full"
+source = "battery"
+metric = "hours_held_full"
+op = ">"
+# 24 h: a day at >=95% on AC is normal for a dock user, so this is only a nudge.
+threshold = 24.0
+severity = "info"
+cooldown_min = 10080
+message = "Battery has sat at 95%+ on AC for {value} hours. A charge limit of 80% would slow wear."
+
+[[rule]]
+# extra: deep discharge stresses the cells. Emitted only while discharging.
+name = "battery-deep-discharge"
+source = "battery"
+metric = "discharging_pct"
+op = "<"
+# 10 %: below this the cell voltage sags and cycle-life cost rises sharply.
+threshold = 10.0
+cooldown_min = 30
+message = "Battery is at {value}% and discharging. Plug in soon."
+
+[[rule]]
+name = "ram-low"
+source = "ram"
+metric = "available_mb"
+op = "<"
+# 500 MB of MemAvailable: below this the kernel starts evicting hot page cache
+# and the desktop gets visibly sluggish.
+threshold = 500.0
+# 2 x 5 s: ignore the momentary dip when a big program allocates.
+sustain = 2
+cooldown_min = 15
+message = "Only {value} MB of RAM available (limit {threshold} MB)."
+
+[[rule]]
+# extra: RAM + free swap is all the kernel has left before the OOM killer runs.
+name = "ram-oom-risk"
+source = "ram"
+metric = "oom_headroom_mb"
+op = "<"
+threshold = 300.0
+severity = "crit"
+sustain = 2
+cooldown_min = 15
+message = "OOM killer imminent: only {value} MB of RAM+swap left."
+
+[[rule]]
+# extra: Linux pressure-stall info (needs CONFIG_PSI); thrashing shows here
+# before memory is actually exhausted.
+name = "ram-thrashing"
+source = "ram"
+metric = "psi_some_avg10"
+op = ">"
+# 25 %: tasks stalled on memory a quarter of the time over 10 s.
+threshold = 25.0
+# 6 x 5 s = 30 s sustained, so one short stall does not alert.
+sustain = 6
+cooldown_min = 30
+message = "System is thrashing: tasks stalled on memory {value}% of the last 10 s."

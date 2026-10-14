@@ -1,0 +1,33 @@
+# healthd — per-user dinit service.
+#
+# `make install` fills in @BINDIR@ and writes this to ~/.config/dinit.d/healthd.
+#
+# It belongs in your *user* dinit instance, not the system one: healthd sends
+# notifications over your desktop's D-Bus session bus, stores its data under
+# $HOME and runs `doas nvme smart-log` as you.
+#
+#   dinitctl enable healthd     # start with your session (needs the usual
+#                               # `boot` service with a waits-for.d directory;
+#                               # otherwise add `waits-for = healthd` to `boot`)
+#   dinitctl start healthd      # start it now
+#   dinitctl catlog healthd     # read its log output
+#
+# If notifications never appear, the service probably cannot see your session
+# bus. Set it once in the dinit environment, then restart the service:
+#   dinitctl setenv DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+
+type = process
+command = @BINDIR@/healthd
+
+# Come back after a crash...
+restart = true
+# ...after a short pause (so a persistent failure does not spin the CPU)...
+restart-delay = 5
+# ...but give up after 5 restarts within 60 s: a crash loop means a bug or a
+# broken config, and looping forever would only fill the log.
+restart-limit-interval = 60
+restart-limit-count = 5
+
+# Keep stdout/stderr in dinit's in-memory log buffer: no log file on disk to
+# rotate, and `dinitctl catlog healthd` still shows the recent output.
+log-type = buffer

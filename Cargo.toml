@@ -1,0 +1,43 @@
+[workspace]
+members = [".", "crates/healthd-proto"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+healthd-proto = { path = "crates/healthd-proto" }
+
+[package]
+name = "healthd"
+description = "Lightweight system health daemon (NVMe, battery, CPU, RAM) for Artix Linux / dinit"
+version.workspace = true
+edition.workspace = true
+default-run = "healthd"
+
+[dependencies]
+healthd-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml = "1"
+# `bundled` compiles SQLite into the binary: no system libsqlite3 version drift.
+rusqlite = { version = "0.40", features = ["bundled"] }
+# Trim clap to what the three binaries actually use (smaller binary, fewer deps).
+clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+# Default `z` feature = pure-Rust zbus backend: no libdbus C dependency, no tokio.
+notify-rust = "4"
+# Only src/bin/health-tui.rs imports this; the daemon never links it.
+ratatui = "0.30"
+
+[profile.release]
+# Optimise for size: the daemon is idle 99.99% of the time, so binary size
+# (page-cache + RSS) matters more than peak speed.
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+# MUST stay "unwind": poll::spawn() uses catch_unwind to restart a crashed poller.
+panic = "unwind"

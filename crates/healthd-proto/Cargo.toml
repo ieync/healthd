@@ -1,0 +1,9 @@
+[package]
+name = "healthd-proto"
+description = "Wire protocol and blocking client for the healthd Unix-socket API"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
