@@ -174,6 +174,7 @@ impl Hub {
                 })
                 .collect(),
             active_alerts: st.engine.active(),
+            rules: st.engine.rules_info(),
         }
     }
 

@@ -41,6 +41,15 @@ command = "nvme"
 # table, even when this is false (useful for headless boxes).
 desktop = true
 
+[web]
+# The dashboard is built into the daemon (no extra process, no extra files):
+# open http://127.0.0.1:8808/ . Set to false to close the port entirely.
+enabled = true
+# 8808: the port the dashboard was designed around. It listens on 127.0.0.1
+# only, never on the network, and there is deliberately no setting to change
+# that: the page has no login, so exposing it would publish your health data.
+port = 8808
+
 # ---------------------------------------------------------------------------
 # Rules. Fields:
 #   name         unique label shown in events

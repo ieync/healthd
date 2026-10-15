@@ -568,6 +568,7 @@ mod tests {
                 since: 900,
                 msg: "CPU is at 91 C".into(),
             }],
+            rules: vec![],
         });
         app.events = vec![Event {
             ts: 900,

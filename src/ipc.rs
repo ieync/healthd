@@ -50,13 +50,25 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(200);
 
 /// Releases a connection slot when dropped (even if the handler panics).
-struct SlotGuard(Arc<AtomicUsize>);
+pub(crate) struct SlotGuard(Arc<AtomicUsize>);
 
 impl Drop for SlotGuard {
     /// Give the slot back.
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::AcqRel);
     }
+}
+
+/// Claim one of `max` connection slots, or `None` when all are taken.
+///
+/// Shared with the web server so both listeners cap concurrent clients the
+/// same way. The slot is released when the returned guard is dropped.
+pub(crate) fn try_acquire(active: &Arc<AtomicUsize>, max: usize) -> Option<SlotGuard> {
+    if active.fetch_add(1, Ordering::AcqRel) >= max {
+        active.fetch_sub(1, Ordering::AcqRel);
+        return None;
+    }
+    Some(SlotGuard(Arc::clone(active)))
 }
 
 /// Bind the socket and serve clients forever; only returns on a fatal error.
@@ -73,12 +85,10 @@ pub fn serve(hub: &Arc<Hub>, path: &Path) -> io::Result<()> {
                 continue;
             }
         };
-        if active.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
-            active.fetch_sub(1, Ordering::AcqRel);
+        let Some(slot) = try_acquire(&active, MAX_CONNECTIONS) else {
             reject(stream);
             continue;
-        }
-        let slot = SlotGuard(Arc::clone(&active));
+        };
         let hub = Arc::clone(hub);
         let spawned = thread::Builder::new()
             .name("ipc-conn".to_owned())
@@ -173,7 +183,10 @@ fn handle_conn(hub: &Hub, stream: UnixStream) {
 }
 
 /// Execute one request against the hub.
-fn dispatch(hub: &Hub, req: Request) -> Response {
+///
+/// `pub(crate)` because the web dashboard's `/api/*` routes run the very same
+/// function: there is one API, with two transports.
+pub(crate) fn dispatch(hub: &Hub, req: Request) -> Response {
     match req {
         Request::Status => Response::success(&hub.status()),
         Request::History {
@@ -229,6 +242,10 @@ mod tests {
 
         let status = client.status().unwrap();
         assert_eq!(status.metrics[0].metric, "temp_c");
+        assert!(status
+            .rules
+            .iter()
+            .any(|r| r.name == "cpu-hot" && r.op == ">" && r.threshold == 85.0));
         let hist = client.history("cpu", "temp_c", Some(0), None).unwrap();
         assert_eq!(hist.points.len(), 1);
         let ev = client.events(Some(0), None, Some(Severity::Warn)).unwrap();

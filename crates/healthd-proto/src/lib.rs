@@ -205,6 +205,27 @@ pub struct ActiveAlert {
     pub msg: String,
 }
 
+/// A configured alert rule, as far as a frontend needs it.
+///
+/// WHY it is part of `status`: a chart can only draw the *real* alert threshold
+/// (and not a number hard-coded in the frontend) if the daemon says what its
+/// rules are, and users can edit those rules in the config file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RuleInfo {
+    /// Rule name from the config.
+    pub name: String,
+    /// Source pattern; a trailing `*` is a prefix match (`nvme*`).
+    pub source: String,
+    /// Metric the rule watches.
+    pub metric: String,
+    /// Comparison operator: `>`, `>=`, `<` or `<=`.
+    pub op: String,
+    /// Value the metric is compared against.
+    pub threshold: f64,
+    /// Severity of the alert.
+    pub severity: Severity,
+}
+
 /// Payload of `status`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StatusData {
@@ -216,6 +237,9 @@ pub struct StatusData {
     pub metrics: Vec<Metric>,
     /// Currently violated rules, worst first.
     pub active_alerts: Vec<ActiveAlert>,
+    /// Every configured rule. Absent from older daemons, hence the default.
+    #[serde(default)]
+    pub rules: Vec<RuleInfo>,
 }
 
 /// One stored sample.

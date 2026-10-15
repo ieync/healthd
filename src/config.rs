@@ -29,6 +29,9 @@ pub struct Config {
     /// Desktop notification switch.
     #[serde(default)]
     pub notify: NotifyCfg,
+    /// Embedded web dashboard.
+    #[serde(default)]
+    pub web: WebCfg,
     /// Alert rules (`[[rule]]` tables); replaces the built-in set when present.
     #[serde(default = "builtin_rules", rename = "rule")]
     pub rules: Vec<Rule>,
@@ -103,6 +106,26 @@ impl Default for NotifyCfg {
     }
 }
 
+/// Web dashboard settings.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebCfg {
+    /// Serve the dashboard at all?
+    pub enabled: bool,
+    /// TCP port on 127.0.0.1.
+    pub port: u16,
+}
+
+impl Default for WebCfg {
+    /// On, at port 8808 (the port the dashboard was designed around).
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: 8808,
+        }
+    }
+}
+
 /// Comparison operator of a rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum Op {
@@ -121,6 +144,16 @@ pub enum Op {
 }
 
 impl Op {
+    /// The operator as written in the config file (and sent to frontends).
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            Self::Gt => ">",
+            Self::Ge => ">=",
+            Self::Lt => "<",
+            Self::Le => "<=",
+        }
+    }
+
     /// Does `value <op> threshold` hold?
     pub fn test(self, value: f64, threshold: f64) -> bool {
         match self {
@@ -251,6 +284,10 @@ impl Config {
         if self.nvme.command.trim().is_empty() {
             return Err("nvme.command must not be empty".to_owned());
         }
+        // Port 0 would mean "pick any free port", which nobody could then find.
+        if self.web.port == 0 {
+            return Err("web.port must be between 1 and 65535".to_owned());
+        }
         if r.days == 0 || r.raw_hours == 0 {
             return Err("retention.days and retention.raw_hours must be at least 1".to_owned());
         }
@@ -318,6 +355,19 @@ mod tests {
         assert_eq!(find("ram-low").threshold, 500.0);
         assert_eq!(builtin_rules().len(), cfg.rules.len());
         assert_eq!(cfg.nvme.command, "nvme");
+        assert!(cfg.web.enabled && cfg.web.port == 8808);
+    }
+
+    /// `[web]` is optional, validated, and rejects typos like everything else.
+    #[test]
+    fn web_section() {
+        let cfg: Config = toml::from_str("[web]\nenabled = false\nport = 9000\n").unwrap();
+        assert!(!cfg.web.enabled && cfg.web.port == 9000);
+        cfg.validate().unwrap();
+        let mut zero = Config::builtin().unwrap();
+        zero.web.port = 0;
+        assert!(zero.validate().is_err());
+        assert!(toml::from_str::<Config>("[web]\nbind = \"0.0.0.0\"\n").is_err());
     }
 
     /// A file without `[[rule]]` falls back to the built-in rules.

@@ -438,6 +438,7 @@ mod tests {
                 since: 0,
                 msg: "Only 100 MB of RAM available".into(),
             }],
+            rules: vec![],
         };
         let mut buf = Vec::new();
         print_status(&mut buf, &Style { on: false }, &status).unwrap();

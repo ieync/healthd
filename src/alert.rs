@@ -10,7 +10,7 @@ use std::error::Error;
 use std::sync::mpsc;
 use std::thread;
 
-use healthd_proto::{format_value, ActiveAlert, Severity};
+use healthd_proto::{format_value, ActiveAlert, RuleInfo, Severity};
 use notify_rust::{Notification, Timeout, Urgency};
 
 use crate::config::Rule;
@@ -128,6 +128,21 @@ impl Engine {
             }
         }
         out
+    }
+
+    /// Every configured rule, in config order (for `status`).
+    pub fn rules_info(&self) -> Vec<RuleInfo> {
+        self.rules
+            .iter()
+            .map(|r| RuleInfo {
+                name: r.name.clone(),
+                source: r.source.clone(),
+                metric: r.metric.clone(),
+                op: r.op.symbol().to_owned(),
+                threshold: r.threshold,
+                severity: r.severity,
+            })
+            .collect()
     }
 
     /// Rules currently in the alerting state, worst and oldest first.
@@ -295,6 +310,18 @@ mod tests {
         assert_eq!(e.observe(0, "nvme1", "avail_spare", 10.0).len(), 1);
         assert!(e.observe(1, "nvme2", "avail_spare", 90.0).is_empty());
         assert_eq!(e.active().len(), 2);
+    }
+
+    /// The rule list sent to frontends mirrors the config (symbol, threshold).
+    #[test]
+    fn rules_info_mirrors_config() {
+        let cfg = Config::builtin().unwrap();
+        let info = Engine::new(cfg.rules.clone()).rules_info();
+        assert_eq!(info.len(), cfg.rules.len());
+        let hot = info.iter().find(|r| r.name == "cpu-hot").unwrap();
+        assert_eq!((hot.op.as_str(), hot.threshold), (">", 85.0));
+        let spare = info.iter().find(|r| r.name == "nvme-spare-low").unwrap();
+        assert_eq!((spare.source.as_str(), spare.op.as_str()), ("nvme*", "<"));
     }
 
     /// Unrelated metrics and sources never trigger anything.

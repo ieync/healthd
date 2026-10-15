@@ -5,16 +5,24 @@
 # your home directory by default and no root / doas is needed.
 #
 #   make build            optimised build of all three binaries
+#   make web              rebuild the dashboard in web/ (needs Node; see below)
+#   make web-check        type-check and unit-test the dashboard
+#   make web-verify       fail if the committed web/dist is out of date
 #   make install          install binaries, dinit user service, example config
 #   make uninstall        remove what `install` put in place
 #   make lint             rustfmt --check + clippy with warnings denied
 #   make fmt              reformat the code in place
 #   make test             run every unit test
 #
+# The dashboard is a Svelte app in web/ whose *built* output, web/dist, is
+# committed and compiled into the daemon (include_bytes!). So `make build` needs
+# only Rust; Node is needed only when you change something under web/src.
+#
 # Override paths on the command line, e.g.  make install PREFIX=/usr/local
 # (use DESTDIR=... for staged/package builds).
 
 CARGO       ?= cargo
+NPM         ?= npm
 PREFIX      ?= $(HOME)/.local
 BINDIR      ?= $(PREFIX)/bin
 CONFIG_HOME ?= $(or $(XDG_CONFIG_HOME),$(HOME)/.config)
@@ -25,7 +33,7 @@ TARGET_DIR  ?= $(or $(CARGO_TARGET_DIR),target)
 
 BINS := healthd healthctl health-tui
 
-.PHONY: all build install uninstall lint fmt test clean
+.PHONY: all build install uninstall lint fmt test clean web web-check web-verify
 
 all: build
 
@@ -35,6 +43,28 @@ build:
 
 test:
 	$(CARGO) test --workspace --locked
+
+# `npm ci` installs exactly what package-lock.json says (the npm counterpart of
+# --locked) and re-runs only when the lockfile changes.
+web/node_modules: web/package-lock.json
+	cd web && $(NPM) ci
+	touch web/node_modules
+
+# Rebuild web/dist. Commit the result: the daemon embeds it at compile time.
+web: web/node_modules
+	cd web && $(NPM) run build
+
+web-check: web/node_modules
+	cd web && $(NPM) run check
+	cd web && $(NPM) test
+
+# Builds into a scratch directory and compares, so a forgotten `make web` after
+# editing web/src is caught before it ships a stale dashboard.
+web-verify: web/node_modules
+	rm -rf web/.verify
+	cd web && $(NPM) run build -- --outDir .verify
+	diff -r web/dist web/.verify || { rm -rf web/.verify; echo "web/dist is out of date: run 'make web'" >&2; exit 1; }
+	rm -rf web/.verify
 
 # Lint = formatting check + clippy. Any warning fails the build.
 lint:
